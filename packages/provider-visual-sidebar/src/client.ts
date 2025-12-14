@@ -1,12 +1,35 @@
 import type { ReactGrabAPI } from "react-grab/core";
 import { formatElementInfo, copyContent } from "react-grab/core";
 
-// Sidebar state
+// Track changes for a single element
+interface ElementChanges {
+  element: HTMLElement;
+  selector: string;
+  originalStyles: Record<string, string>;
+  currentStyles: Record<string, string>;
+  originalText: string;
+  currentText: string;
+  elementInfo?: string; // Cached element context
+}
+
+// Session stores all changes across multiple elements
+interface Session {
+  changes: Map<HTMLElement, ElementChanges>;
+}
+
+const session: Session = {
+  changes: new Map(),
+};
+
+// Sidebar state for current element
 interface SidebarState {
   isOpen: boolean;
   element: HTMLElement | null;
   originalStyles: Record<string, string>;
   currentStyles: Record<string, string>;
+  originalText: string;
+  currentText: string;
+  wasContentEditable: boolean;
   undoStack: Array<() => void>;
   collapsedSections: Set<string>;
 }
@@ -16,9 +39,62 @@ const state: SidebarState = {
   element: null,
   originalStyles: {},
   currentStyles: {},
+  originalText: "",
+  currentText: "",
+  wasContentEditable: false,
   undoStack: [],
   collapsedSections: new Set(),
 };
+
+// Generate a CSS selector for an element
+function getElementSelector(el: HTMLElement): string {
+  if (el.id) return `#${el.id}`;
+  let selector = el.tagName.toLowerCase();
+  if (el.className && typeof el.className === 'string') {
+    const classes = el.className.trim().split(/\s+/).slice(0, 2).join('.');
+    if (classes) selector += `.${classes}`;
+  }
+  return selector;
+}
+
+// Save current element changes to session
+function saveCurrentToSession() {
+  if (!state.element) return;
+
+  const hasStyleChanges = TRACKED_PROPERTIES.some(
+    prop => state.originalStyles[prop] !== state.currentStyles[prop]
+  );
+  const hasTextChanges = state.originalText !== state.currentText;
+
+  if (hasStyleChanges || hasTextChanges) {
+    session.changes.set(state.element, {
+      element: state.element,
+      selector: getElementSelector(state.element),
+      originalStyles: { ...state.originalStyles },
+      currentStyles: { ...state.currentStyles },
+      originalText: state.originalText,
+      currentText: state.currentText,
+    });
+    updateSessionBadge();
+  }
+}
+
+// Update badge showing number of edited elements
+function updateSessionBadge() {
+  const badge = document.getElementById("rg-session-badge");
+  const count = session.changes.size;
+  if (badge) {
+    badge.textContent = String(count);
+    badge.style.display = count > 0 ? "flex" : "none";
+  }
+}
+
+// Clear all session changes
+function clearSession() {
+  session.changes.clear();
+  updateSessionBadge();
+  showToast("Session cleared");
+}
 
 // CSS properties we track
 const TRACKED_PROPERTIES = [
@@ -72,8 +148,78 @@ function undo() {
   if (undoFn) undoFn();
 }
 
+// Text editing functions
+function enableTextEditing(element: HTMLElement) {
+  state.wasContentEditable = element.isContentEditable;
+  state.originalText = element.innerText;
+  state.currentText = element.innerText;
+
+  // Make element editable
+  element.setAttribute("contenteditable", "true");
+
+  // Add visual indicator that element is editable
+  element.style.outline = "2px dashed #3b82f6";
+  element.style.outlineOffset = "2px";
+  element.style.cursor = "text";
+
+  // Ensure the element can be selected/edited
+  (element.style as any).webkitUserSelect = "text";
+  (element.style as any).userSelect = "text";
+
+  // Track text changes
+  element.addEventListener("input", onTextInput);
+  element.addEventListener("blur", onTextBlur);
+
+  // Deactivate React Grab while editing so clicks go to the element
+  if (window.__REACT_GRAB__?.isActive?.()) {
+    window.__REACT_GRAB__?.deactivate();
+  }
+
+  console.log("[visual-sidebar] Text editing enabled for:", element.tagName, "- click to edit text");
+}
+
+function disableTextEditing(element: HTMLElement) {
+  if (!state.wasContentEditable) {
+    element.removeAttribute("contenteditable");
+  }
+
+  // Remove visual indicator and editing styles
+  element.style.outline = "";
+  element.style.outlineOffset = "";
+  element.style.cursor = "";
+  (element.style as any).webkitUserSelect = "";
+  (element.style as any).userSelect = "";
+
+  // Remove listeners
+  element.removeEventListener("input", onTextInput);
+  element.removeEventListener("blur", onTextBlur);
+}
+
+function onTextInput(e: Event) {
+  const target = e.target as HTMLElement;
+  const previousText = state.currentText;
+  state.currentText = target.innerText;
+
+  // Add to undo stack
+  state.undoStack.push(() => {
+    if (state.element) {
+      state.element.innerText = previousText;
+      state.currentText = previousText;
+    }
+  });
+}
+
+function onTextBlur() {
+  // Update current text on blur in case of paste or other changes
+  if (state.element) {
+    state.currentText = state.element.innerText;
+  }
+}
+
 function generateChangeSummary(): string {
   const changes: string[] = [];
+
+  // Style changes
   for (const prop of TRACKED_PROPERTIES) {
     const original = state.originalStyles[prop];
     const current = state.currentStyles[prop];
@@ -82,6 +228,14 @@ function generateChangeSummary(): string {
       changes.push(`- ${cssProp}: ${original} -> ${current}`);
     }
   }
+
+  // Text changes
+  if (state.originalText !== state.currentText) {
+    changes.push(`\nText content changed:`);
+    changes.push(`- Before: "${state.originalText.substring(0, 100)}${state.originalText.length > 100 ? '...' : ''}"`);
+    changes.push(`- After: "${state.currentText.substring(0, 100)}${state.currentText.length > 100 ? '...' : ''}"`);
+  }
+
   return changes.join("\n");
 }
 
@@ -104,23 +258,95 @@ function generateTailwindClasses(): string {
   return classes.join(" ");
 }
 
+// Generate changes for a single element (from session)
+function generateElementChanges(changes: ElementChanges): string {
+  const lines: string[] = [];
+
+  // Style changes
+  for (const prop of TRACKED_PROPERTIES) {
+    const original = changes.originalStyles[prop];
+    const current = changes.currentStyles[prop];
+    if (original !== current) {
+      const cssProp = prop.replace(/([A-Z])/g, "-$1").toLowerCase();
+      lines.push(`  - ${cssProp}: ${original} -> ${current}`);
+    }
+  }
+
+  // Text changes
+  if (changes.originalText !== changes.currentText) {
+    lines.push(`  - text: "${changes.originalText.substring(0, 50)}${changes.originalText.length > 50 ? '...' : ''}" -> "${changes.currentText.substring(0, 50)}${changes.currentText.length > 50 ? '...' : ''}"`);
+  }
+
+  return lines.join("\n");
+}
+
 async function copyChanges() {
-  if (!state.element) { showToast("No element selected!"); return; }
-  const changes = generateChangeSummary();
-  if (!changes) { showToast("No changes to copy!"); return; }
-  const elementInfo = await formatElementInfo(state.element);
-  const tailwindClasses = generateTailwindClasses();
-  let prompt = `Update this element's styles:\n${changes}\n\n`;
-  if (tailwindClasses) prompt += `Suggested Tailwind classes: ${tailwindClasses}\n\n`;
-  prompt += `Element context:\n${elementInfo}`;
+  // Save current element to session first
+  saveCurrentToSession();
+
+  // Check if we have any changes in session
+  if (session.changes.size === 0) {
+    showToast("No changes to copy!");
+    return;
+  }
+
+  const useTailwind = detectTailwind();
+  const sections: string[] = [];
+
+  // Build prompt for all changed elements
+  sections.push(`Update the following ${session.changes.size} element(s):\n`);
+
+  let elementIndex = 1;
+  for (const [element, changes] of session.changes) {
+    const elementChanges = generateElementChanges(changes);
+    let elementInfo = changes.elementInfo;
+
+    // Get element info if not cached
+    if (!elementInfo) {
+      try {
+        elementInfo = await formatElementInfo(element);
+        changes.elementInfo = elementInfo;
+      } catch {
+        elementInfo = `<${changes.selector}>`;
+      }
+    }
+
+    sections.push(`--- Element ${elementIndex}: ${changes.selector} ---`);
+    sections.push(`Changes:`);
+    sections.push(elementChanges);
+
+    // Generate tailwind suggestions for this element
+    if (useTailwind) {
+      const twClasses: string[] = [];
+      const propToTailwind: Record<string, string> = {
+        paddingTop: "pt", paddingRight: "pr", paddingBottom: "pb", paddingLeft: "pl",
+        marginTop: "mt", marginRight: "mr", marginBottom: "mb", marginLeft: "ml",
+      };
+      for (const [prop, prefix] of Object.entries(propToTailwind)) {
+        if (changes.originalStyles[prop] !== changes.currentStyles[prop]) {
+          const px = parsePx(changes.currentStyles[prop]);
+          const twValue = TAILWIND_SPACING[px];
+          if (twValue !== undefined) twClasses.push(`${prefix}-${twValue}`);
+        }
+      }
+      if (twClasses.length > 0) {
+        sections.push(`Suggested Tailwind: ${twClasses.join(" ")}`);
+      }
+    }
+
+    sections.push(`\nElement context:\n${elementInfo}\n`);
+    elementIndex++;
+  }
+
+  const prompt = sections.join("\n");
+
   try {
     await navigator.clipboard.writeText(prompt);
-    showToast("Copied! Paste in Claude Code");
-    closeSidebar();
+    showToast(`Copied ${session.changes.size} change(s)! Paste in Claude Code`);
+    // Don't clear session - let user do it manually
   } catch {
     copyContent(prompt);
-    showToast("Copied!");
-    closeSidebar();
+    showToast(`Copied ${session.changes.size} change(s)!`);
   }
 }
 
@@ -389,6 +615,20 @@ function createSidebar() {
         width: 50px;
         flex-shrink: 0;
       }
+      .rg-draggable-label {
+        cursor: ew-resize;
+        user-select: none;
+        transition: color 0.15s;
+      }
+      .rg-draggable-label:hover {
+        color: #3b82f6;
+      }
+      .rg-draggable {
+        cursor: ew-resize;
+      }
+      .rg-draggable:focus {
+        cursor: text;
+      }
       .rg-input {
         flex: 1;
         background: #252525;
@@ -462,10 +702,35 @@ function createSidebar() {
         color: #fff;
       }
       .rg-btn-secondary:hover { background: #404040; }
+      .rg-btn-danger {
+        background: transparent;
+        color: #f87171;
+        border: 1px solid rgba(248, 113, 113, 0.3);
+      }
+      .rg-btn-danger:hover { background: rgba(248, 113, 113, 0.1); }
+
+      /* Session badge */
+      .rg-session-badge {
+        display: none;
+        align-items: center;
+        justify-content: center;
+        min-width: 20px;
+        height: 20px;
+        padding: 0 6px;
+        background: #3b82f6;
+        color: #fff;
+        font-size: 11px;
+        font-weight: 600;
+        border-radius: 10px;
+        margin-left: 8px;
+      }
     </style>
 
     <div class="rg-header">
-      <div class="rg-header-title">Style</div>
+      <div class="rg-header-title">
+        Style
+        <span class="rg-session-badge" id="rg-session-badge">0</span>
+      </div>
       <button class="rg-close" id="rg-close">
         <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
           <path d="M4 4L12 12M12 4L4 12" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
@@ -535,12 +800,12 @@ function createSidebar() {
       </div>
       <div class="rg-section-content">
         <div class="rg-row">
-          <span class="rg-label">Width</span>
-          <input class="rg-input" id="rg-width" type="text" placeholder="auto">
+          <span class="rg-label rg-draggable-label" data-prop="width">Width</span>
+          <input class="rg-input rg-draggable" id="rg-width" type="text" placeholder="auto" data-prop="width">
         </div>
         <div class="rg-row">
-          <span class="rg-label">Height</span>
-          <input class="rg-input" id="rg-height" type="text" placeholder="auto">
+          <span class="rg-label rg-draggable-label" data-prop="height">Height</span>
+          <input class="rg-input rg-draggable" id="rg-height" type="text" placeholder="auto" data-prop="height">
         </div>
       </div>
     </div>
@@ -555,8 +820,8 @@ function createSidebar() {
       </div>
       <div class="rg-section-content">
         <div class="rg-row">
-          <span class="rg-label">Size</span>
-          <input class="rg-input" id="rg-font-size" type="number" min="8" max="120" step="1">
+          <span class="rg-label rg-draggable-label" data-prop="fontSize">Size</span>
+          <input class="rg-input rg-draggable" id="rg-font-size" type="text" placeholder="16" data-prop="fontSize">
         </div>
         <div class="rg-row">
           <span class="rg-label">Color</span>
@@ -589,7 +854,8 @@ function createSidebar() {
 
     <div class="rg-actions">
       <button class="rg-btn rg-btn-secondary" id="rg-undo">Undo</button>
-      <button class="rg-btn rg-btn-primary" id="rg-copy">Copy Changes</button>
+      <button class="rg-btn rg-btn-danger" id="rg-clear">Clear All</button>
+      <button class="rg-btn rg-btn-primary" id="rg-copy">Copy All</button>
     </div>
   `;
 
@@ -600,6 +866,7 @@ function createSidebar() {
   sidebar.querySelector("#rg-close")?.addEventListener("click", closeSidebar);
   sidebar.querySelector("#rg-copy")?.addEventListener("click", copyChanges);
   sidebar.querySelector("#rg-undo")?.addEventListener("click", undo);
+  sidebar.querySelector("#rg-clear")?.addEventListener("click", clearSession);
 
   // Section collapse
   sidebar.querySelectorAll(".rg-section-header").forEach(header => {
@@ -642,15 +909,42 @@ function createSidebar() {
     });
   });
 
-  // Size inputs
-  const widthInput = sidebar.querySelector("#rg-width") as HTMLInputElement;
-  const heightInput = sidebar.querySelector("#rg-height") as HTMLInputElement;
-  widthInput?.addEventListener("change", () => applyStyle("width", widthInput.value || "auto"));
-  heightInput?.addEventListener("change", () => applyStyle("height", heightInput.value || "auto"));
+  // Draggable inputs (width, height, font-size) - drag on label OR input
+  sidebar.querySelectorAll(".rg-draggable").forEach(input => {
+    const el = input as HTMLInputElement;
+    const prop = el.dataset.prop;
+    if (!prop) return;
 
-  // Font size
-  const fontSizeInput = sidebar.querySelector("#rg-font-size") as HTMLInputElement;
-  fontSizeInput?.addEventListener("input", () => applyStyle("fontSize", `${fontSizeInput.value}px`));
+    el.addEventListener("mousedown", (e) => {
+      if (document.activeElement !== el) {
+        e.preventDefault();
+        startDrag(e as MouseEvent, prop);
+      }
+    });
+
+    el.addEventListener("change", () => {
+      const val = el.value;
+      if (val === "" || val === "auto") {
+        applyStyle(prop, "auto");
+      } else {
+        applyStyle(prop, `${parsePx(val)}px`);
+      }
+    });
+
+    el.addEventListener("focus", () => el.select());
+  });
+
+  // Draggable labels - can drag on the label text too
+  sidebar.querySelectorAll(".rg-draggable-label").forEach(label => {
+    const el = label as HTMLElement;
+    const prop = el.dataset.prop;
+    if (!prop) return;
+
+    el.addEventListener("mousedown", (e) => {
+      e.preventDefault();
+      startDrag(e as MouseEvent, prop);
+    });
+  });
 
   // Colors
   const bgColorPicker = sidebar.querySelector("#rg-bg-color") as HTMLInputElement;
@@ -707,11 +1001,13 @@ function updateSidebarInputs() {
     if (input) input.value = String(parsePx(styles[prop] || "0"));
   }
 
-  // Size
+  // Size - show just the number for dragging
   const widthInput = sidebarElement.querySelector("#rg-width") as HTMLInputElement;
   const heightInput = sidebarElement.querySelector("#rg-height") as HTMLInputElement;
-  if (widthInput) widthInput.value = styles.width === "auto" ? "" : styles.width || "";
-  if (heightInput) heightInput.value = styles.height === "auto" ? "" : styles.height || "";
+  const widthVal = styles.width || "auto";
+  const heightVal = styles.height || "auto";
+  if (widthInput) widthInput.value = widthVal === "auto" ? "" : String(parsePx(widthVal));
+  if (heightInput) heightInput.value = heightVal === "auto" ? "" : String(parsePx(heightVal));
 
   // Display
   updateDisplayToggles();
@@ -744,18 +1040,52 @@ function updateSidebarInputs() {
 
 function openSidebar(element: HTMLElement) {
   createSidebar();
+
+  // Save current element to session before switching
+  if (state.element && state.element !== element) {
+    saveCurrentToSession();
+    disableTextEditing(state.element);
+  }
+
   state.element = element;
-  state.originalStyles = captureStyles(element);
-  state.currentStyles = { ...state.originalStyles };
   state.undoStack = [];
   state.isOpen = true;
+
+  // Check if element was previously edited in this session
+  const previousChanges = session.changes.get(element);
+  if (previousChanges) {
+    // Restore previous state
+    state.originalStyles = { ...previousChanges.originalStyles };
+    state.currentStyles = { ...previousChanges.currentStyles };
+    state.originalText = previousChanges.originalText;
+    state.currentText = previousChanges.currentText;
+  } else {
+    // Fresh element
+    state.originalStyles = captureStyles(element);
+    state.currentStyles = { ...state.originalStyles };
+  }
+
+  // Enable inline text editing
+  enableTextEditing(element);
+
   updateSidebarInputs();
+  updateSessionBadge();
   sidebarElement?.classList.add("open");
 }
 
 function closeSidebar() {
+  // Save changes to session before closing
+  saveCurrentToSession();
+
+  // Disable text editing before clearing element reference
+  if (state.element) {
+    disableTextEditing(state.element);
+  }
+
   state.isOpen = false;
   state.element = null;
+  state.originalText = "";
+  state.currentText = "";
   sidebarElement?.classList.remove("open");
 }
 
