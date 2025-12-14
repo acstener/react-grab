@@ -386,6 +386,19 @@ importers:
         specifier: ^8.4.0
         version: 8.5.1(jiti@2.6.1)(postcss@8.5.6)(tsx@4.20.6)(typescript@5.9.3)(yaml@2.8.1)
 
+  packages/provider-visual-sidebar:
+    dependencies:
+      react-grab:
+        specifier: workspace:*
+        version: link:../react-grab
+    devDependencies:
+      solid-js:
+        specifier: ^1.9.10
+        version: 1.9.10
+      tsup:
+        specifier: ^8.4.0
+        version: 8.5.1(jiti@2.6.1)(postcss@8.5.6)(tsx@4.20.6)(typescript@5.9.3)(yaml@2.8.1)
+
   packages/react-grab:
     dependencies:
       bippy:
@@ -2159,8 +2172,8 @@ packages:
     resolution: {integrity: sha512-y9/ltK2TY+0HD1H2Sz7MvU3zFh4SjER6eQVNQfBx/0gK9N7S0QwHW6cmhHLx3CP25zN190LKHXPieMGqsVvrOQ==}
     engines: {node: '>=18'}
 
-  '@sourcegraph/amp@0.0.1765526485-g99562d':
-    resolution: {integrity: sha512-IrHdFPhLZAE8gX1L2foMgUW1qdfK/OpcBaRvCQrsc3AcsGQjqJW3UncvHdvXTUzYYV/EmEU2akTIcM2t7kg4Yg==}
+  '@sourcegraph/amp@0.0.1765569693-ga99d1a':
+    resolution: {integrity: sha512-sVXDfwPdAPajkvESFKkwPMoW9wOzyT2J0KA+G9KphvIGQAnQ8vNfQz646fpuHGoP7DSxhskBZW9UcUPNXqNttg==}
     engines: {node: '>=20'}
     hasBin: true
 
@@ -7380,10 +7393,10 @@ snapshots:
 
   '@sourcegraph/amp-sdk@0.1.0-20251210081226-g90e3892':
     dependencies:
-      '@sourcegraph/amp': 0.0.1765526485-g99562d
+      '@sourcegraph/amp': 0.0.1765569693-ga99d1a
       zod: 3.25.76
 
-  '@sourcegraph/amp@0.0.1765526485-g99562d':
+  '@sourcegraph/amp@0.0.1765569693-ga99d1a':
     dependencies:
       '@napi-rs/keyring': 1.1.9
 

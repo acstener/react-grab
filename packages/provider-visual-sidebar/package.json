@@ -1,0 +1,29 @@
+{
+  "name": "@react-grab/visual-sidebar",
+  "version": "0.0.1",
+  "type": "module",
+  "exports": {
+    "./client": {
+      "types": "./dist/client.d.ts",
+      "import": "./dist/client.js",
+      "require": "./dist/client.cjs"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "dev": "tsup --watch",
+    "build": "rm -rf dist && NODE_ENV=production tsup"
+  },
+  "devDependencies": {
+    "tsup": "^8.4.0",
+    "solid-js": "^1.9.10"
+  },
+  "dependencies": {
+    "react-grab": "workspace:*"
+  },
+  "peerDependencies": {
+    "solid-js": "^1.9.0"
+  }
+}
